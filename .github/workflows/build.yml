@@ -31,34 +31,6 @@ jobs:
           name: qc_inspect_linux_x64
           path: dist/qc_inspect_linux_x64
 
-  build-linux-arm64:
-    name: Linux arm64
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Build inside arm64 container
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build binary via docker
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${{ github.workspace }}:/work" \
-            -w /work \
-            python:3.11-slim \
-            bash -c "pip install pyinstaller && pyinstaller --onefile --name qc_inspect_linux_arm64 qc_inspect.py"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: qc_inspect_linux_arm64
-          path: dist/qc_inspect_linux_arm64
-
   build-windows-x64:
     name: Windows x64
     runs-on: windows-2022
