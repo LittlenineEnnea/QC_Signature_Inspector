@@ -303,11 +303,14 @@ def find_certs(data, verbose):
             print(f"{indent}  PubKey  : {info.get('pubkey_alg', 'N/A')}")
 
             if verbose >= 1 or role == "Root CA":
+                cd_hash256, cd_hash384 = _cert_der_hashes(cert['data'])
+                print(f"{indent}  {BOLD}Cert-DER SHA256 (OEM_PK_HASH):{RESET} {c(GREEN, cd_hash256)}")
+                print(f"{indent}  {BOLD}Cert-DER SHA384 (OEM_PK_HASH):{RESET} {c(GREEN, cd_hash384)}")
                 pk_hash256, pk_hash384 = _pubkey_hashes(cert['data'])
                 if pk_hash256:
-                    print(f"{indent}  {BOLD}PubKey SHA256 (pkhash):{RESET} {c(GREEN, pk_hash256)}")
+                    print(f"{indent}  {DIM}SPKI SHA256 (pubkey only): {pk_hash256}{RESET}")
                 if pk_hash384:
-                    print(f"{indent}  {BOLD}PubKey SHA384 (pkhash):{RESET} {c(GREEN, pk_hash384)}")
+                    print(f"{indent}  {DIM}SPKI SHA384 (pubkey only): {pk_hash384}{RESET}")
 
             if verbose >= 2:
                 print(f"{indent}  Raw DER ({cert['len']} bytes):")
@@ -347,8 +350,22 @@ def _parse_cert_openssl(cert_data):
     except Exception:
         return None
 
+def _cert_der_hashes(cert_data):
+    """Hash the ENTIRE certificate DER (SubjectPublicKeyInfo + all TBS fields
+    + signature). This is what the PBL/loader actually fuses and compares as
+    OEM_PK_HASH: per 80-NV396-81 sec. 3.3 / App. B compute_oem_pk_hash, the
+    authentication logic validates the *whole* root certificate against the
+    provisioned hash - NOT just the public key. So these two values are what a
+    device / QFIL 'OEM PK HASH' / 'Loader PK hash' will show.
+      - secboot_sha2_root  -> SHA256 (first 32 bytes of the fuse region)
+      - default sha384 root -> SHA384 (48 bytes)."""
+    return (hashlib.sha256(cert_data).hexdigest(),
+            hashlib.sha384(cert_data).hexdigest())
+
 def _pubkey_hashes(cert_data):
-    """Extract public key DER and compute SHA256/SHA384."""
+    """Extract public key DER (SPKI only) and compute SHA256/SHA384.
+    NOTE: this hashes ONLY the public key, so it does NOT match the device
+    OEM_PK_HASH. Use _cert_der_hashes() for the value the fuse stores."""
     try:
         with tempfile.NamedTemporaryFile(suffix='.der', delete=False) as f:
             f.write(cert_data)
@@ -432,16 +449,24 @@ def print_summary(data, elf_end, hash_segs, certs, verbose):
         info = cert['info']
         if info.get('subject') == info.get('issuer'):
             subj = info.get('subject', 'Unknown')
-            pk256, pk384 = _pubkey_hashes(cert['data'])
-            unique_roots[subj] = (pk256, pk384)
+            cd256, cd384 = _cert_der_hashes(cert['data'])   # = device OEM_PK_HASH
+            pk256, pk384 = _pubkey_hashes(cert['data'])      # = SPKI-only (informational)
+            unique_roots[subj] = (cd256, cd384, pk256, pk384)
 
     if unique_roots:
-        for i, (subj, (pk256, pk384)) in enumerate(unique_roots.items()):
+        for i, (subj, (cd256, cd384, pk256, pk384)) in enumerate(unique_roots.items()):
             print(f"\n  Root CA #{i+1}: {c(BOLD, subj)}")
-            if pk256:
-                print(f"  {'pkhash SHA256':<28} {c(GREEN, pk256)}")
-            if pk384:
-                print(f"  {'pkhash SHA384':<28} {c(GREEN, pk384)}")
+            # ---- what the device / QFIL / PBL actually fuses & compares ----
+            print(f"  {c(YELLOW, 'OEM_PK_HASH  (== device / QFIL Loader PK hash: SHA of FULL cert DER)')}")
+            print(f"  {'  cert-DER SHA256':<28} {c(GREEN, cd256)}  {DIM}<- secboot_sha2_root{RESET}")
+            print(f"  {'  cert-DER SHA384':<28} {c(GREEN, cd384)}  {DIM}<- default sha384 root{RESET}")
+            # ---- SPKI (public-key-only) hashes: informational, NOT the fuse ----
+            if pk256 or pk384:
+                print(f"  {c(DIM, 'SPKI pkhash (public key only - NOT the OEM_PK_HASH fuse value):')}")
+                if pk256:
+                    print(f"  {'  SPKI SHA256':<28} {c(DIM, pk256)}")
+                if pk384:
+                    print(f"  {'  SPKI SHA384':<28} {c(DIM, pk384)}")
     else:
         print(c(RED, "  No root certificates found"))
 
