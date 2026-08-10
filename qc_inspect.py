@@ -1063,15 +1063,10 @@ def print_tme_segment(seg, profiles=None):
 # (tag_name, description, profile vector kind, show Value line)
 _VEC_BLOCKS = [
     ('DebugVector', 'The Debug Options enabled by the DPR:', 'debug_vector', True),
-    ('AuthorizedDebugVector', 'The Debug Options authorized by the DEC:', 'debug_vector', True),
     ('DebugIPScanDumpPolicyVector', 'The IP Scan Dump Debug Options enabled by the DPR:', 'ip_scan_dump_policy_vector', False),
-    ('AuthorizedDebugIPScanDumpPolicyVector', 'The IP Scan Dump Debug Options authorized by the DEC:', 'ip_scan_dump_policy_vector', False),
     ('DebugMemDumpPolicyVector', 'The Memory Dump Debug Options enabled by the DPR:', 'mem_dump_policy_vector', False),
-    ('AuthorizedDebugMemDumpPolicyVector', 'The Memory Dump Debug Options authorized by the DEC:', 'mem_dump_policy_vector', False),
     ('DebugQADDumpPolicyVector', 'The QAD Dump Policy Options enabled by the DPR:', 'qad_dump_policy_vector', False),
-    ('AuthorizedDebugQADDumpPolicyVector', 'The QAD Dump Policy Options authorized by the DEC:', 'qad_dump_policy_vector', False),
     ('DebugRTQADDumpPolicyVector', 'The Runtime QAD Dump Policy Options enabled by the DPR:', 'rt_qad_dump_policy_vector', False),
-    ('AuthorizedDebugRTQADDumpPolicyVector', 'The Runtime QAD Dump Policy Options authorized by the DEC:', 'rt_qad_dump_policy_vector', False),
 ]
 
 # built-in debug-vector tables per soc hw version, extracted from qualcomm security
