@@ -386,6 +386,280 @@ def diagnose_not_elf(data):
         print(c(YELLOW, "  => payload is ENCRYPTED; decrypt/unpack before inspecting."))
     return None
 
+# --- sw_id -> image name ------------------------------------------------------
+# qualcomm assigns sw_id per chipset family, so the table is keyed by soc hw
+# version - the value a v7/v8 hash table segment carries in its qti/oem metadata,
+# which lets the right table be picked from the image itself.
+#
+# pre-tme chipsets: sign_id/sw_id pairs from sectools
+# config/<chipset>/<chipset>_secimage.xml (86 chipset configs, sm8350-era tree).
+SW_ID_LEGACY = {
+    0x00: "sbl1 / xbl / aboot", 0x01: "mba", 0x02: "modem / mcfg", 0x03: "prog_firehose / vip",
+    0x04: "adsp / lpass", 0x05: "devcfg", 0x06: "sp_mcp / spss", 0x07: "tz / qsee",
+    0x08: "sp_apps", 0x09: "appsbl / uefi", 0x0a: "rpm", 0x0b: "xbl_sec",
+    0x0c: "qtee app - keymaster, widevine, prov", 0x0d: "wcnss", 0x0e: "venus",
+    0x0f: "gss / amss", 0x10: "dolby", 0x11: "sti", 0x12: "wlan / sdi", 0x13: "acpi / vpu",
+    0x14: "gfx_microcode", 0x15: "hyp / qhee", 0x16: "pmic", 0x17: "cdsp", 0x18: "slpi",
+    0x1b: "efs_tar", 0x1c: "abl", 0x1d: "ipa_fw", 0x1e: "tz_tee", 0x1f: "cmnlib",
+    0x20: "shrm", 0x21: "aop", 0x22: "multi_image", 0x23: "multi_image_qti",
+    0x24: "qupv3 / qupfw", 0x25: "xbl_config", 0x26: "bg_fw", 0x27: "uefifv / imagefv",
+    0x28: "npu", 0x2a: "face_auth / ipprotector", 0x2b: "secelf", 0x2d: "ipa_uc",
+    0x2e: "cvp", 0x2f: "mlvm", 0x30: "dam_mod", 0x31: "cpucp", 0x32: "guestos",
+    0x33: "dbt", 0x38: "bt_patch", 0x39: "smss", 0x3a: "tools_fv", 0x3b: "quantum_fv",
+    0x3c: "quest_fv", 0x43: "usbfw", 0x44: "cdsp1", 0x45: "adsp_lite", 0x200: "dbgp"}
+
+# tme-era chipsets (hash table segment v7/v8). names are verbatim <image id=...>
+# from each chipset's sectools security_profile.xml. the ids below are the ones
+# those profiles agree on; SW_ID_SOC carries what a single chipset adds or renames.
+SW_ID_TME = {
+    0x02: "MPSS", 0x03: "DEVICE-PROGRAMMER", 0x04: "ADSP", 0x05: "TZ-DEVCFG",
+    0x07: "TZ", 0x09: "UEFI", 0x0c: "TZ-APP-OEM / TZ-APP-QTI", 0x0d: "WCNSS",
+    0x0e: "VENUS-FW", 0x12: "WLAN-USER-PD", 0x14: "GPU-MICRO-CODE", 0x15: "QHEE",
+    0x17: "CDSP", 0x1a: "VIP", 0x1b: "EFS-TAR", 0x1c: "ABL", 0x1d: "IPA-FW",
+    0x1e: "TZ-TEE", 0x1f: "CMNLIB", 0x20: "SHRM", 0x21: "AOP", 0x22: "OEM-MISC",
+    0x23: "QTI-MISC", 0x24: "QUPV3", 0x25: "XBL-CONFIG", 0x27: "UEFIFV",
+    0x28: "NPU-FW", 0x2a: "IP-PROTECTOR", 0x2b: "SEC-ELF", 0x2e: "EVA-FW",
+    0x2f: "MLVM", 0x31: "CPUCP", 0x32: "APPS-CPU-GUEST-OS", 0x34: "CAMERA-FW",
+    0x35: "TME-FW", 0x36: "XBL-SC", 0x3d: "AOP-CONFIG", 0x3e: "RFC", 0x40: "MCFG",
+    0x42: "XBL-RAM-DUMP", 0x4c: "OEM-VM", 0x4d: "CPUSYS-VM", 0x51: "Q6-MPSS-DTB",
+    0x52: "Q6-CDSP-DTB", 0x53: "Q6-ADSP-DTB", 0x63: "MPSS-OEM-PD", 0x64: "CPUCP-DTB",
+    0x7a: "MPSS-OEM-PD-DTB", 0x7b: "BOOT-BLOCK", 0x86: "STX", 0x87: "ADSP-USER-PD",
+    0x88: "SOCCP-MISSION-MODE", 0x8e: "CAMERA-FW-1", 0x91: "PDP", 0x94: "TME-CONFIG",
+    0x95: "XBL-AC-CONFIG", 0x96: "TZ-AC-CONFIG", 0x97: "HYP-AC-CONFIG",
+    0x9c: "PDP-CDB", 0x9d: "DCP", 0x9e: "DCP-DTB", 0x9f: "SOCCP-DTB",
+    0xa1: "TZ-QTI-CONFIG", 0x200: "DEBUG-POLICY"}
+
+# soc hw version -> chipset. this is the value a v7/v8 hash table segment carries
+# in its qti/oem metadata, and it keys every per-soc table in this file.
+SOC_NAMES = {
+    '0xa003': "KAILUA / SM8550", '0xa00c': "LANAI / SM8650",
+    '0xa012': "PAKALA / SM8750", '0xa013': "PALAWAN / SM8635, SM7675",
+    '0xa01b': "KAANAPALI / SM8850", '0xa022': "MOLOKAI / SM8845",
+    '0xa023': "HAWI / SM8975", '0xa02a': "MAILI / SM8950"}
+
+# pre-tme chipsets identify themselves with soc_vers instead, carried in a v6 hash
+# table segment's metadata. from the soc_vers/<chipset> pairs in sectools
+# config/*/*_secimage.xml plus cfgparser/chipset_profiles.py. several chipsets can
+# share one value, so those keep both names.
+SOC_VERS_NAMES = {
+    '0x2013': "9205", '0x2014': "qcs405", '0x2017': "ipq6018", '0x3000': "8996",
+    '0x3002': "8998", '0x3006': "sdm660", '0x3007': "sdm630", '0x4004': "6290",
+    '0x400a': "6390", '0x400b': "7605", '0x400c': "6390", '0x400d': "qcn90xx",
+    '0x4014': "moselle", '0x6000': "sdm845", '0x6002': "sdx24", '0x6003': "sm8150",
+    '0x6004': "sdm670", '0x6005': "sdm670", '0x6006': "sc8180x", '0x6007': "sm6150",
+    '0x6008': "KONA / SM8250", '0x6009': "sdm670", '0x600b': "sdx55", '0x600c': "sm7150",
+    '0x600d': "fraser / saipan", '0x600e': "rennell / sc7180",
+    '0x600f': "LAHAINA / SM8350", '0x6012': "bitra", '0x6013': "chitwan",
+    '0x6014': "makena", '0x6016': "olympic", '0x6017': "cedros", '0x6018': "kodiak",
+    '0x7001': "qtang2", '0x9001': "nicobar", '0x9002': "kamorta", '0x9003': "agatti",
+    '0x9004': "mannar"}
+
+# ids a chipset adds to, or renames in, SW_ID_TME (pre-tme chipsets carry a complete
+# list of their own instead, since SW_ID_TME does not apply to them)
+SW_ID_SOC = {
+    # kona / SM8250, from sm8250_secimage.xml
+    '0x6008': {
+        0x00: "xbl", 0x02: "modem", 0x03: "prog_firehose_ddr / prog_firehose_lite / vip",
+        0x04: "adsp", 0x05: "devcfg", 0x06: "sp_mcp_qti / sp_mcp_v1 / sp_mcp_v2",
+        0x07: "tz", 0x08: "sp_apps_qti", 0x0b: "xbl_sec",
+        0x0c: "qtee app - 26 ids incl keymaster, widevine, storsec",
+        0x0e: "venus", 0x11: "sti", 0x12: "wlan", 0x13: "acpi", 0x14: "gfx_microcode",
+        0x15: "hyp", 0x17: "cdsp", 0x18: "slpi", 0x1b: "efs_tar", 0x1c: "abl",
+        0x1d: "ipa_fw", 0x1e: "tz_tee", 0x1f: "cmnlib / cmnlib64", 0x20: "shrm",
+        0x21: "aop", 0x22: "multi_image", 0x24: "qupv3", 0x25: "xbl_config",
+        0x27: "uefifv / imagefv", 0x28: "npu", 0x2a: "ipprotector", 0x2d: "ipa_uc",
+        0x2e: "cvp", 0x2f: "mlvm", 0x31: "cpucp"},
+    # lahaina / SM8350, from lahaina_secimage.xml
+    '0x600f': {
+        0x00: "xbl", 0x02: "modem / mcfg_hw / mcfg_sw",
+        0x03: "prog_firehose_ddr / prog_firehose_lite / vip", 0x04: "adsp",
+        0x05: "devcfg", 0x06: "sp_mcp_qti / sp_mcp_v1 / spss1t", 0x07: "tz",
+        0x08: "sp_apps_qti / sp_apps", 0x0b: "xbl_sec",
+        0x0c: "qtee app - 28 ids incl keymaster, widevine, storsec",
+        0x0e: "venus", 0x11: "sti", 0x12: "wlan", 0x13: "acpi", 0x14: "gfx_microcode",
+        0x15: "hyp", 0x17: "cdsp", 0x18: "slpi", 0x1b: "efs_tar", 0x1c: "abl",
+        0x1d: "ipa_fw", 0x1e: "tz_tee", 0x1f: "cmnlib / cmnlib64", 0x20: "shrm",
+        0x21: "aop", 0x22: "multi_image", 0x24: "qupv3", 0x25: "xbl_config",
+        0x27: "uefifv / imagefv", 0x28: "npu", 0x2a: "ipprotector", 0x2d: "ipa_uc",
+        0x2e: "cvp", 0x2f: "mlvm", 0x31: "cpucp", 0x32: "guestos",
+        0x200: "dbgp / dbgp_dbl"},
+    '0xa013': {0x0d: "WPSS", 0x2d: "IPA-MICRO-CODE"},
+    '0xa01b': {0x06: "MCP-OEM / MCP-QTI", 0x08: "SPU-APP-OEM / SPU-APP-QTI",
+               0x89: "SOCCP-DEBUG", 0x8a: "SOCCP-OEM-DCD", 0xc1: "PVMFW"},
+    '0xa023': {0x93: "UEFI-DTB", 0xc2: "BL31", 0xc6: "HYP-CONFIG", 0xc7: "PMIC-PSI",
+               0xca: "QECP-DEBUG", 0xcb: "QECP-OEM-DCD", 0xcf: "DCB", 0xd0: "VP-FW",
+               0xd8: "VP-FW-MINI"}}
+
+# ids seen in signed images but not in any profile here, matched by finding a
+# standalone file of a known name with the same id; printed with a trailing "?"
+SW_ID_GUESSED = {}
+
+# profiles passed with --security-profile; their image_list wins over the tables
+PROFILES = {}
+
+# platform binding read out of each image's qti/oem metadata, replayed in the
+# summary so the hardware an image is locked to is visible without scrolling
+IMAGE_META = []
+
+def soc_name(soc):
+    return ((PROFILES or SOC_PROFILES).get(soc) or {}).get('name')
+
+def soc_names(soc_hw):
+    """chipset names for a metadata soc-hw-version list; an image can bind several,
+    so name every one that is known rather than implying it is only the first."""
+    return ", ".join(n for n in (soc_name(hexs(x).lower()) for x in soc_hw) if n)
+
+def sw_id_name(sw_id, soc=None, ver=None):
+    """image name for a sw_id: profile xml, then per-soc table, then era table."""
+    if soc:
+        ids = ((PROFILES or SOC_PROFILES).get(soc) or {}).get('sw_ids') or {}
+        if sw_id in ids:
+            return ids[sw_id]
+    # a tme-era image is either on a known tme soc or carries a v7/v8 hash segment
+    tme_first = soc in SW_ID_SOC or ver in (7, 8)
+    for table in (SW_ID_TME, SW_ID_LEGACY) if tme_first else (SW_ID_LEGACY, SW_ID_TME):
+        if sw_id in table:
+            return table[sw_id]
+    if sw_id in SW_ID_GUESSED:
+        return SW_ID_GUESSED[sw_id] + " ?"
+    return None
+
+# concatenated multi-image containers (".melf", programmer.elf, some xbl/devprg):
+# several complete, independently signed elfs laid end to end. a plain elf parse
+# only ever sees the first stage - usually the tiny unsigned pbl/sahara shim - so
+# the container has to be split before anything can be said about the real stages.
+# (p_offset, p_filesz) index into the phdr tuple, plus where e_entry/e_phoff live.
+PH_LAYOUT = {1: ('<I', 28, 42, '<IIIIIIII', 1, 4, 6),
+             2: ('<Q', 32, 54, '<IIQQQQQQ', 2, 5, 1)}
+
+def elf_image_extent(data, base):
+    """bytes the elf at `base` spans: header + phdr table + every segment, or None."""
+    # ei_data must be little endian and ei_version 1; rejects a stray magic in data
+    if (base + 52 > len(data) or data[base:base + 4] != ELF_MAGIC
+            or data[base + 5] != 1 or data[base + 6] != 1):
+        return None
+    lay = PH_LAYOUT.get(data[base + 4])
+    if lay is None:
+        return None
+    off_fmt, off_at, num_at, ph_fmt, i_off, i_fsz, _ = lay
+    try:
+        e_phoff = struct.unpack_from(off_fmt, data, base + off_at)[0]
+        e_phentsize, e_phnum = struct.unpack_from('<HH', data, base + num_at)
+    except struct.error:
+        return None
+    if not e_phnum or e_phentsize < struct.calcsize(ph_fmt):
+        return None
+    end = e_phoff + e_phnum * e_phentsize
+    if base + end > len(data):
+        return None
+    for i in range(e_phnum):
+        try:
+            ph = struct.unpack_from(ph_fmt, data, base + e_phoff + i * e_phentsize)
+        except struct.error:
+            return None
+        end = max(end, ph[i_off] + ph[i_fsz])
+    return min(end, len(data) - base)
+
+def split_elf_images(data, max_gap=0x10000):
+    """[(offset, size)] of the elfs concatenated in `data`; one entry if it is plain."""
+    images, base = [], 0
+    while True:
+        size = elf_image_extent(data, base)
+        if not size:
+            break
+        images.append((base, size))
+        nxt = base + size
+        pos = data.find(ELF_MAGIC, nxt, nxt + max_gap + 4)
+        # only 0x00/0xff alignment padding may sit between two stages
+        if pos < 0 or set(data[nxt:pos]) - {0x00, 0xff}:
+            break
+        base = pos
+    # a plain image keeps the whole file, so trailing data still counts in the summary
+    return images if len(images) > 1 else [(0, len(data))]
+
+def elf_quick_info(data, base):
+    """class/machine/entry + hash table segment of one image, without printing."""
+    lay = PH_LAYOUT.get(data[base + 4]) if base + 52 <= len(data) else None
+    if lay is None:
+        return None
+    off_fmt, off_at, num_at, ph_fmt, i_off, i_fsz, i_flags = lay
+    try:
+        machine = struct.unpack_from('<H', data, base + 18)[0]
+        e_entry = struct.unpack_from(off_fmt, data, base + 24)[0]
+        e_phoff = struct.unpack_from(off_fmt, data, base + off_at)[0]
+        e_phentsize, e_phnum = struct.unpack_from('<HH', data, base + num_at)
+        hash_seg = None
+        for i in range(e_phnum):
+            ph = struct.unpack_from(ph_fmt, data, base + e_phoff + i * e_phentsize)
+            if os_segment_type(ph[i_flags]) == OS_SEG_HASH and ph[i_fsz]:
+                hash_seg = (ph[i_off], ph[i_fsz])
+    except struct.error:
+        return None
+    return {'is64': data[base + 4] == 2, 'machine': machine,
+            'entry': e_entry, 'phnum': e_phnum, 'hash_seg': hash_seg}
+
+def hashseg_brief(seg):
+    """(version, software id) of a hash table segment, for one-line image summaries."""
+    try:
+        ver = struct.unpack_from('<I', seg, 4)[0]
+        if ver == 6:
+            qm, om = mbn_v6_meta(seg)
+            for md in (om, qm):
+                if len(md) >= MBN_V6_META_SIZE:
+                    return ver, struct.unpack_from('<I', md, 8)[0]
+            return ver, None
+        cm_off = {7: 40, 8: 56}.get(ver)
+        if cm_off:
+            cms = struct.unpack_from('<I', seg, 8)[0]
+            if cms >= 24 and len(seg) >= cm_off + cms:
+                return ver, struct.unpack_from('<I', seg, cm_off + 8)[0]
+        elif ver == 3:
+            return ver, struct.unpack_from('<I', seg, 0)[0]      # boot image id
+    except struct.error:
+        return None, None
+    return ver, None
+
+def machine_short(machine, width=11):
+    name = EM.get(machine, f"0x{machine:x}")
+    m = re.search(r'\((.+?)\)', name)
+    name = m.group(1) if m else name
+    return name if len(name) <= width else name[:width - 1] + '~'
+
+def image_identity(data, base):
+    """(hash seg version, sw_id, image name, soc) of one stage; parts may be None."""
+    info = elf_quick_info(data, base)
+    if info is None or not info['hash_seg']:
+        return None, None, None, None
+    ho, hs = info['hash_seg']
+    seg = data[base + ho:base + ho + hs]
+    ver, sw = hashseg_brief(seg)
+    soc = _hashseg_soc(seg)
+    return ver, sw, (sw_id_name(sw, soc, ver) if sw is not None else None), soc
+
+def print_container_overview(data, images):
+    section("Multi-ELF Container Layout")
+    print(f"  {'Idx':<5}{'Offset':<12}{'Size':<12}{'Machine':<15}{'Entry':<14}"
+          f"{'PHs':<5}{'Sig':<5}{'SW ID':<8}{'Image'}")
+    print(f"  {'-'*104}")
+    socs = set()
+    for i, (base, size) in enumerate(images):
+        info = elf_quick_info(data, base)
+        if info is None:
+            print(f"  {i:<5}{hexs(base):<12}{hexs(size):<12}{c(RED, 'unparsable elf header')}")
+            continue
+        ver, sw, name, soc = image_identity(data, base)
+        socs.add(soc)
+        mach = f"{machine_short(info['machine'], 11)}/{'64' if info['is64'] else '32'}"
+        print(f"  {i:<5}{hexs(base):<12}{hexs(size):<12}{mach:<15}{hexs(info['entry']):<14}"
+              f"{info['phnum']:<5}{('v%d' % ver if ver is not None else '-'):<5}"
+              f"{(hexs(sw) if sw is not None else '-'):<8}"
+              f"{c(GREEN, name) if name else (DIM + 'unsigned stub' + RESET if ver is None else '-')}")
+    chip = ", ".join(sorted(f"{s} ({soc_name(s)})" for s in socs if s and soc_name(s)))
+    print(f"\n  {DIM}every entry is a complete, separately signed image; each is "
+          f"inspected below{RESET}")
+    if chip:
+        print(f"  {DIM}image names resolved for soc hw version {chip}{RESET}")
+
 def parse_elf(data, verbose, _base=0):
     section("ELF Header")
     if data[:4] != ELF_MAGIC:
@@ -624,13 +898,14 @@ def cert_role_properties(cert):
         field("Padding", info['padding'])
 
 # metadata
-def print_common_metadata(cm):
+def print_common_metadata(cm, soc=None, ver=None):
     if len(cm) < 24:
         return None
     maj, minr, sw_id, sec_sw_id, alg, mrt = struct.unpack_from('<IIIIII', cm, 0)
     section("Common Metadata")
     field("Major Version", maj); field("Minor Version", minr)
-    field("Software ID", hexs(sw_id)); field("Secondary Software ID", hexs(sec_sw_id))
+    field("Software ID", hexs(sw_id), sw_id_name(sw_id, soc, ver) or "")
+    field("Secondary Software ID", hexs(sec_sw_id))
     field("Hash Table Algorithm", HASH_TABLE_ALGO.get(alg, (hexs(alg), 0))[0])
     field("Measurement Register Target", MEASUREMENT_TARGET.get(mrt, hexs(mrt)))
     return HASH_TABLE_ALGO.get(alg, ("Unknown", 48))
@@ -655,7 +930,7 @@ def print_authority_metadata(md, title):
     field("Anti-Rollback Version", hexs(arb)); field("Root Certificate Index", mrc)
     if soc_hw:
         field("SoC Hardware Version" if len(soc_hw) == 1 else "SoC Hardware Versions",
-              " and ".join(hexs(x) for x in soc_hw))
+              " and ".join(hexs(x) for x in soc_hw), soc_names(soc_hw))
     field("Product Segment ID" if is_v3meta else "SoC Feature ID", hexs(seg_or_feat))
     field("JTAG ID", hexs(jtag))
     if serials:
@@ -667,6 +942,7 @@ def print_authority_metadata(md, title):
     if rch_algo in (2, 3, 5):
         sz = {2: 32, 3: 48, 5: 64}[rch_algo]
         field("OEM Root Certificate Hash", "0x" + rch[64 - sz:].hex())
+    bound = []
     for mask, label, is_debug in META_FLAGS:
         if mask == 12:
             label = "Bound to Product Segment ID" if is_v3meta else "Bound to SoC Feature ID"
@@ -675,6 +951,10 @@ def print_authority_metadata(md, title):
             field("JTAG Debug", DEBUG_DESC.get(val, hexs(val)))
         else:
             field(label, FALSE_TRUE.get(val, hexs(val)))
+            if val == 2 and label.startswith("Bound to "):
+                bound.append(label[len("Bound to "):])
+    IMAGE_META.append((title.split()[0], tuple(soc_hw), oem_id, oem_prod, jtag,
+                       tuple(serials), arb, soc_lc, oem_lc, tuple(bound)))
 
 # hash table segment - version 7 (ecdsa / metadata)
 def parse_v7(seg):
@@ -701,7 +981,7 @@ def parse_v7(seg):
     ocert = seg[o:o + ocs]; o += ocs
     padding = seg[o:]
 
-    algo = print_common_metadata(cm) or ("SHA384", 48)
+    algo = print_common_metadata(cm, _hashseg_soc(seg), ver) or ("SHA384", 48)
     if qms:
         print_authority_metadata(qm, "QTI Metadata")
     if oms:
@@ -818,7 +1098,7 @@ def parse_v8(seg):
         sig = seg[o:o + ssz]; o += ssz
         cert = seg[o:o + csz]; o += csz
         regions.append((lbl, sig, cert))
-    algo = print_common_metadata(cm) or ("SHA384", 48)
+    algo = print_common_metadata(cm, _hashseg_soc(seg), ver) or ("SHA384", 48)
     if qms:
         print_authority_metadata(qm, "QTI Metadata")
     if oms:
@@ -855,6 +1135,68 @@ def parse_v5(seg):
             roots.append(print_authority_signing(lbl, sig, cert))
     return [r for r in roots if r]
 
+# v6 metadata: an 8-byte major/minor header then METADATA_0_0 from sectools
+# parsegen/mbn/versions/v6/headers.py. 8 + 6*4 + 12*4 + 8*4 + 2*4 = 120 bytes, which
+# is the metadata size these images actually carry.
+# major, minor, sw_id, hw_id, oem_id, model_id, app_id, flags, then the arrays
+MBN_V6_META = '<' + 'I' * 8 + 'I' * NUM_SOC_HW_VERS + 'I' * NUM_SERIALS + 'II'
+MBN_V6_META_SIZE = struct.calcsize(MBN_V6_META)
+assert MBN_V6_META_SIZE == 120, MBN_V6_META_SIZE
+_V6_SOC, _V6_SER = 8, 8 + NUM_SOC_HW_VERS
+
+# (bit position, width, name) - FLAGS_1_O from the same header
+MBN_V6_FLAGS = [(0, 1, "ROT Enabled"), (1, 1, "In Use SoC HW Version"),
+                (2, 1, "Use Serial Number In Signing"), (3, 1, "OEM ID Independent"),
+                (4, 2, "Root Revoke Activate Enable"), (6, 2, "UIE Key Switch Enable"),
+                (8, 2, "Debug"), (10, 1, "In Use HW ID"), (11, 1, "Model ID Independent")]
+
+def mbn_v6_meta(seg):
+    """(qti metadata, oem metadata) of a v6 hash table segment."""
+    qms, oms = struct.unpack_from('<II', seg, 40)
+    return seg[48:48 + qms], seg[48 + qms:48 + qms + oms]
+
+def v6_meta_soc(md):
+    """soc_vers of a v6 metadata blob as the '0x6008' style key the tables use."""
+    if len(md) < MBN_V6_META_SIZE:
+        return None
+    v = struct.unpack_from(MBN_V6_META, md, 0)
+    socs = [x for x in v[_V6_SOC:_V6_SOC + NUM_SOC_HW_VERS] if x]
+    return hexs(socs[0]).lower() if socs else None
+
+def print_v6_metadata(md, title):
+    if len(md) < MBN_V6_META_SIZE:
+        return None
+    v = struct.unpack_from(MBN_V6_META, md, 0)
+    maj, minr, sw_id, hw_id, oem_id, model_id, app_id, flags = v[:8]
+    socs = [x for x in v[_V6_SOC:_V6_SOC + NUM_SOC_HW_VERS] if x]
+    serials = [x for x in v[_V6_SER:_V6_SER + NUM_SERIALS] if x]
+    mrc, arb = v[-2], v[-1]
+    soc = hexs(socs[0]).lower() if socs else None
+
+    section(title)
+    field("Major Version", maj); field("Minor Version", minr)
+    field("Software ID", hexs(sw_id), sw_id_name(sw_id, soc, 6) or "")
+    field("Hardware ID", hexs(hw_id))
+    field("OEM ID", hexs(oem_id)); field("Model ID", hexs(model_id))
+    field("App ID", hexs(app_id))
+    if socs:
+        field("SoC Version" if len(socs) == 1 else "SoC Versions",
+              " and ".join(hexs(x) for x in socs), soc_names(socs))
+    if serials:
+        field("Serial Number" if len(serials) == 1 else "Serial Numbers",
+              " and ".join(hexs(x) for x in serials))
+    field("Root Certificate Index", mrc)
+    field("Anti-Rollback Version", hexs(arb))
+    for pos, width, label in MBN_V6_FLAGS:
+        val = (flags >> pos) & ((1 << width) - 1)
+        # v6 flags are plain bits, not v7's 2-bit FALSE=1/TRUE=2 encoding
+        field(label, ("True" if val else "False") if width == 1 else hexs(val))
+    IMAGE_META.append((title.split()[0], tuple(socs), oem_id, model_id, 0,
+                       tuple(serials), arb, 0, 0,
+                       tuple(l for pos, w, l in MBN_V6_FLAGS
+                             if w == 1 and (flags >> pos) & 1 and l.startswith("In Use "))))
+    return sw_id
+
 # hash table segment - version 6 (v5 layout + qti/oem metadata sizes)
 def parse_v6(seg):
     (_res, ver, qss, qcs, image_size, hts, _r4, oss, _r5, ocs,
@@ -869,7 +1211,12 @@ def parse_v6(seg):
     field("QTI Certificate Chain Size", f"{qcs} (bytes)")
     field("OEM Signature Size", f"{oss} (bytes)")
     field("OEM Certificate Chain Size", f"{ocs} (bytes)")
-    o = 48 + qms + oms                        # v6 metadata format differs; skip its bytes
+    qm, om = mbn_v6_meta(seg)
+    if qms:
+        print_v6_metadata(qm, "QTI Metadata")
+    if oms:
+        print_v6_metadata(om, "OEM Metadata")
+    o = 48 + qms + oms
     ht = seg[o:o + hts]; o += hts
     qsig = seg[o:o + qss]; o += qss
     qcert = seg[o:o + qcs]; o += qcs
@@ -1199,6 +1546,58 @@ DEFAULT_DEBUG_OPTIONS = {
             ('11', 'AOP-ENCRYPTED', 'Enable AOP Data Capture Dump encrypted.'),
             ('12', 'MODEM-UNENCRYPTED', 'Enable Modem Data Capture Dump unencrypted.'),
             ('13', 'MODEM-ENCRYPTED', 'Enable Modem Data Capture Dump encrypted.'),
+        ],
+    },
+    '0xa013': {  # palawan / SM8635, SM7675
+        'debug_vector': [
+            ('2', 'SECURE_BOOT_DISABLE', 'Enable SECURE_BOOT_DISABLE feature.'),
+            ('4', 'WPSS_DBGEN', 'Enable WPSS_DBGEN (WPSS/WLAN Invasive Debug).'),
+            ('5', 'WPSS_NIDEN', 'Enable WPSS_NIDEN (WPSS/WLAN Non-Invasive Debug).'),
+            ('6', 'TIC_REENABLE', 'Enable TIC_REENABLE feature.'),
+            ('11', 'TMEROM_DBGEN', 'Enable TMEROM_DBGEN (TMEROM Invasive Debug).'),
+            ('12', 'TMEROM_NIDEN', 'Enable TMEROM_NIDEN (TMEROM Non-Invasive Debug).'),
+            ('13', 'TMERAM_DBGEN', 'Enable TMERAM_DBGEN (TMERAM Invasive Debug).'),
+            ('14', 'TMERAM_NIDEN', 'Enable TMERAM_NIDEN (TMERAM Non-Invasive Debug).'),
+            ('15', 'AOP_DBGEN', 'Enable AOP_DBGEN (AOP Invasive Debug).'),
+            ('16', 'AOP_NIDEN', 'Enable AOP_NIDEN (AOP Non-Invasive Debug).'),
+            ('17', 'SHRM_DBGEN', 'Enable SHRM_DBGEN (SHRM Invasive Debug).'),
+            ('19', 'CPUCP_DBGEN', 'Enable CPUCP_DBGEN (CPUCP Invasive Debug).'),
+            ('20', 'CPUCP_NIDEN', 'Enable CPUCP_NIDEN (CPUCP Non-Invasive Debug).'),
+            ('21', 'MSS_VECTOR_DBGEN', 'Enable MSS_VECTOR_DBGEN (Modem VECTOR Invasive Debug).'),
+            ('22', 'MSS_VECTOR_NIDEN', 'Enable MSS_VECTOR_NIDEN (Modem VECTOR Non-Invasive Debug).'),
+            ('23', 'QSEE_DBGEN', 'Enable QSEE_DBGEN (QSEE/TZ/APPS Secure Invasive Debug).'),
+            ('24', 'QSEE_NIDEN', 'Enable QSEE_NIDEN (QSEE/TZ/APPS Secure Non-Invasive Debug).'),
+            ('27', 'APB2JTAG_REENABLE', 'Enable APB2JTAG_REENABLE feature.'),
+            ('28', 'GPU_PRIVATE_DBGEN', 'Enable GPU_PRIVATE_DBGEN (GPU_PRIVATE Invasive Debug).'),
+            ('29', 'APPS_DBGEN', 'Enable APPS_DBGEN (APPS Non-Secure Invasive Debug).'),
+            ('30', 'APPS_NIDEN', 'Enable APPS_NIDEN (APPS Non-Secure Non-Invasive Debug).'),
+            ('31', 'LPC', 'Enable LPC (LPC Debug features).'),
+            ('32', 'MSS_SCALAR_DBGEN', 'Enable MSS_SCALAR_DBGEN (Modem SCALAR Invasive Debug).'),
+            ('33', 'MSS_SCALAR_NIDEN', 'Enable MSS_SCALAR_NIDEN (Modem SCALAR Non-Invasive Debug).'),
+            ('36', 'TITAN_DBGEN', 'Enable TITAN_DBGEN (TITAN/Camera Invasive Debug).'),
+            ('37', 'TITAN_NIDEN', 'Enable TITAN_NIDEN (TITAN/Camera Non-Invasive Debug).'),
+            ('38', 'LPASS_DBGEN', 'Enable LPASS_DBGEN (LPASS/ADSP/Audio Invasive Debug).'),
+            ('39', 'LPASS_NIDEN', 'Enable LPASS_NIDEN (LPASS/ADSP/Audio Non-Invasive Debug).'),
+            ('40', 'TURING_DBGEN', 'Enable TURING_DBGEN (TURING/CDSP/Compute Invasive Debug).'),
+            ('41', 'TURING_NIDEN', 'Enable TURING_NIDEN (TURING/CDSP/Compute Non-Invasive Debug).'),
+            ('42', 'IRIS_DBGEN', 'Enable IRIS_DBGEN (IRIS/Video Invasive Debug).'),
+            ('43', 'IRIS_NIDEN', 'Enable IRIS_NIDEN (IRIS/Video Non-Invasive Debug).'),
+            ('44', 'MDSS_DBGEN', 'Enable MDSS_DBGEN (MDSS/Display Invasive Debug).'),
+            ('45', 'MDSS_NIDEN', 'Enable MDSS_NIDEN (MDSS/Display Non-Invasive Debug).'),
+            ('46', 'DDRSS_DBGEN', 'Enable DDRSS_DBGEN (DDRSS Invasive Debug).'),
+            ('47', 'DDRSS_NIDEN', 'Enable DDRSS_NIDEN (DDRSS Non-Invasive Debug).'),
+            ('48', 'GPU_DBGEN', 'Enable GPU_DBGEN (GPU Invasive Debug).'),
+            ('49', 'GPU_NIDEN', 'Enable GPU_NIDEN (GPU Non-Invasive Debug).'),
+            ('50', 'DAP_DBGEN', 'Enable DAP_DBGEN (DAP Invasive Debug).'),
+            ('51', 'DAP_NIDEN', 'Enable DAP_NIDEN (DAP Non-Invasive Debug).'),
+            ('52', 'APPS_SCANDUMP_REENABLE', 'Enable APPS_SCANDUMP_REENABLE feature.'),
+            ('53', 'DDRSS_SCANDUMP_REENABLE', 'Enable DDRSS_SCANDUMP_REENABLE feature.'),
+            ('54', 'DEBUGBUS_DISABLE_REENABLE', 'Enable DEBUGBUS_DISABLE_REENABLE feature.'),
+            ('55', 'DCC_DISABLE_REENABLE', 'Enable DCC_DISABLE_REENABLE feature.'),
+            ('56', 'EUD_DISABLE_REENABLE', 'Enable EUD_DISABLE_REENABLE feature.'),
+            ('57', 'SMMU_SCAN_DUMP_REENABLE', 'Enable SMMU_SCAN_DUMP_REENABLE feature.'),
+            ('58', 'SP_DISABLE_REENABLE', 'Enable SP_DISABLE_REENABLE feature.'),
+            ('59', 'SEC_BOOT_GPIO', 'Enable SEC_BOOT_GPIO feature.'),
         ],
     },
     '0xa01b': {
@@ -1612,7 +2011,7 @@ def load_security_profiles(paths):
              'mem_dump_policy_vector': 'mem_dump_type', 'qad_dump_policy_vector': 'qad',
              'rt_qad_dump_policy_vector': 'qad'}
     lname = lambda e: e.tag.split('}')[-1]
-    prof = {}
+    prof = {soc: dict(d) for soc, d in SOC_PROFILES.items()}
     for p in paths or []:
         try:
             root = ET.parse(p).getroot()
@@ -1670,8 +2069,36 @@ def load_security_profiles(paths):
                     fuse_rows.append((addr, rid, fuses))
         if fuse_rows:
             data['fuse_table'] = fuse_rows
+        sw_ids = {}
+        for img in root.iter():
+            if lname(img) != 'image' or not img.get('id'):
+                continue
+            for ch in img:
+                if lname(ch) != 'sw_id' or not (ch.text or '').strip():
+                    continue
+                try:
+                    sid = int(ch.text.strip(), 16)
+                except ValueError:
+                    continue
+                prev = sw_ids.get(sid)
+                # several images can share an id; keep them all, in document order
+                sw_ids[sid] = img.get('id') if not prev else f"{prev} / {img.get('id')}"
+        if sw_ids:
+            data['sw_ids'] = sw_ids
         for soc in socs:
-            prof[soc] = data
+            base = prof.setdefault(soc, {})
+            for k, v in data.items():
+                if k == 'sw_ids':
+                    # per-id merge: the xml wins where it speaks, built-ins fill
+                    # the rest, so a partial image_list keeps the other names
+                    base['sw_ids'] = {**(base.get('sw_ids') or {}), **v}
+                else:
+                    # a vector/fuse table is one soc's complete bit layout -
+                    # mixing two sources there would mis-decode bits, so replace
+                    base[k] = v
+            # which keys this xml supplied, so output can name its own source
+            base['xml_keys'] = set(base.get('xml_keys', ())) | set(data)
+            base.setdefault('name', root.get('id'))
     return prof
 
 def _tme_find(d, name):
@@ -1720,12 +2147,10 @@ def print_tme_augmented(obj, profiles):
     if not isinstance(soc, str):
         return
     key = soc[:-4].lower()
-    data = (profiles or {}).get(key)
-    builtin = not data
-    if not data:
-        data = DEFAULT_DEBUG_OPTIONS.get(key)   # per-soc built-in table
+    data = (profiles or SOC_PROFILES).get(key)
     if not data:
         return
+    builtin = not set(data.get('xml_keys', ())) & {k for _, _, k, _ in _VEC_BLOCKS}
     out = []
     for tag, desc, kind, show_val in _VEC_BLOCKS:
         opts = data.get(kind)
@@ -1813,6 +2238,168 @@ SECDAT_OP_V3 = {0: 'BLOW', 1: 'BLOW_RANDOM'}
 # msm8996 from the QFPROM Programming Reference (raw addr = 0x70000 + row*8).
 # lets a SEC-ELF / sec.dat fuse file be decoded to the named fuses it blows.
 FUSE_TABLES = {
+    '0xa013': [  # palawan / SM8635, SM7675
+        (0x221c0090, 'OEM_SECURITY_POLICY', [
+            ('DISALLOWSOC_DEBUG', '0', '0'),
+            ('ENFORCE_OEM_AUTHZ_ON_SOC_DEBUG', '1', '1'),
+            ('ENFORCE_OEM_AUTHZ_ON_FUSE_OVERRIDES', '4', '1'),
+            ('ENFORCE_OEM_AUTHZ_ON_ROM_PATCH', '5', '1'),
+            ('ACTIVATE_SECURITY_POLICY', '11', '1'),
+            ('OEM_DEVICE_LCS', '17:16', '0x3'),
+            ('OEM_ALL_DEBUG_DISABLE_FUSE', '32', '0'),
+            ('AUTH_EN', '33', '1'),
+            ('PK_HASH_IN_FUSE', '34', '1'),
+            ('USE_SERIAL_NUM', '35', None),
+            ('ROM_PK_HASH_IDX', '39:36', '0x0'),
+        ]),
+        (0x221c00d8, 'WRITE_PERMISSIONS', [
+            ('OEM_SECURITY_POLICY_WRITE_DISABLE', '5', '1'),
+            ('WRITE_PERMISSIONS_WRITE_DISABLE', '7', '1'),
+            ('READ_PERMISSIONS_WRITE_DISABLE', '8', '1'),
+            ('FUSE_REDUNDANCY_ENABLE_WRITE_DISABLE', '9', '1'),
+            ('DEBUG_DISABLE_WRITE_DISABLE', '10', '1'),
+            ('OEM_CONFIG_WRITE_DISABLE', '12', '1'),
+            ('MRC_HASH_WRITE_DISABLE', '27', '1'),
+            ('OEM_PRODUCT_SEED_WRITE_DISABLE', '28', '1'),
+            ('OEM_SPARE_0_WRITE_DISABLE', '34', None),
+            ('OEM_SPARE_1_WRITE_DISABLE', '35', None),
+        ]),
+        (0x221c00e0, 'READ_PERMISSIONS', [
+            ('OEM_PRODUCT_SEED_READ_DISABLE', '28', '1'),
+        ]),
+        (0x221c00e8, 'FUSE_REDUNDANCY_ENABLE', [
+            ('MRC_HASH_FEC_ENABLE', '27', '1'),
+            ('OEM_PRODUCT_SEED_FEC_ENABLE', '28', '1'),
+        ]),
+        (0x221c00f0, 'DEBUG_DISABLE', [
+            ('SHRM_DBGEN_DISABLE', '6', '1'),
+            ('CPUCP_NIDEN_DISABLE', '9', '1'),
+            ('QSEE_DBGEN_DISABLE', '12', '1'),
+            ('QSEE_NIDEN_DISABLE', '13', '1'),
+            ('WPSS_DBGEN_DISABLE', '21', '1'),
+            ('WPSS_NIDEN_DISABLE', '22', '1'),
+            ('APPS_DBGEN_DISABLE', '32', '1'),
+            ('APPS_NIDEN_DISABLE', '33', '1'),
+            ('MSS_SCALAR_DBGEN_DISABLE', '34', '1'),
+            ('MSS_SCALAR_NIDEN_DISABLE', '35', '1'),
+            ('TITAN_DBGEN_DISABLE', '38', '1'),
+            ('TITAN_NIDEN_DISABLE', '39', '1'),
+            ('LPASS_DBGEN_DISABLE', '40', '1'),
+            ('LPASS_NIDEN_DISABLE', '41', '1'),
+            ('TURING_DBGEN_DISABLE', '42', '1'),
+            ('TURING_NIDEN_DISABLE', '43', '1'),
+            ('IRIS_DBGEN_DISABLE', '44', '1'),
+            ('IRIS_NIDEN_DISABLE', '45', '1'),
+            ('MDSS_DBGEN_DISABLE', '46', '1'),
+            ('MDSS_NIDEN_DISABLE', '47', '1'),
+            ('DDRSS_DBGEN_DISABLE', '48', '1'),
+            ('DDRSS_NIDEN_DISABLE', '49', '1'),
+            ('GPU_DBGEN_DISABLE', '50', '1'),
+            ('GPU_NIDEN_DISABLE', '51', '1'),
+            ('DAP_DBGEN_DISABLE', '52', '1'),
+            ('DAP_NIDEN_DISABLE', '53', '1'),
+            ('APPS_SCANDUMP_DISABLE', '54', '1'),
+            ('DDRSS_SCANDUMP_DISABLE', '55', '1'),
+            ('DEBUGBUS_DISABLE', '56', '1'),
+            ('DCC_DISABLE', '57', '1'),
+            ('SMMU_SCANDUMP_DISABLE', '59', '1'),
+        ]),
+        (0x221c0108, 'OEM_CONFIG', [
+            ('E_DLOAD_DISABLE', '0', None),
+            ('ENUM_TIMEOUT', '1', None),
+            ('FORCE_DLOAD_DISABLE', '2', None),
+            ('FORCE_USB_BOOT_GPIO_DISABLE', '3', None),
+            ('SDCC_ADMA_DISABLE', '4', None),
+            ('FAST_BOOT', '9:5', None),
+            ('SPI_CLK_BOOT_FREQ', '11:10', None),
+            ('PBL_FDL_TIMEOUT_RESET_FEATURE_ENABLE', '13', None),
+            ('WDOG_EN', '14', None),
+            ('PBL_LOG_DISABLE', '15', None),
+            ('PBL_USB_TYPE_C_DISABLE', '16', None),
+            ('ROOT_CERT_TOTAL_NUM', '18:17', None),
+            ('QSPI_DMA_DISABLE', '19', None),
+            ('USB_SS_DISABLE', '22', None),
+            ('USB_PIPO_DISABLE', '23', None),
+            ('DEBUG_POLICY_DISABLE', '28', '0'),
+            ('PBL_FDL_TIMEOUT_RESET_TO_VAL', '30:29', None),
+        ]),
+        (0x221c0110, 'OEM_CONFIG', [
+            ('TZ_SW_CRYPTO_FIPS_ENABLE', '4', None),
+            ('EKU_ENFORCEMENT_EN', '30', '1'),
+            ('OEM_HW_ID', '47:32', 'OEM_VALUE'),
+            ('OEM_PRODUCT_ID', '63:48', None),
+        ]),
+        (0x221c0118, 'OEM_CONFIG', [
+            ('PERIPH_PID', '15:0', None),
+            ('PERIPH_VID', '31:16', None),
+            ('ANTI_ROLLBACK_FEATURE_EN', '35:32', '0xf'),
+            ('PERIPH_CTRL', '40', None),
+        ]),
+        (0x221c0660, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_204', '62:56', None),
+        ]),
+        (0x221c0668, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_205', '62:56', None),
+        ]),
+        (0x221c0670, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_206', '62:56', None),
+        ]),
+        (0x221c0678, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_207', '62:56', None),
+        ]),
+        (0x221c0680, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_208', '62:56', None),
+        ]),
+        (0x221c0688, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_209', '62:56', None),
+        ]),
+        (0x221c0690, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_210', '62:56', None),
+        ]),
+        (0x221c0698, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_211', '62:56', None),
+        ]),
+        (0x221c06a0, 'MRC_HASH', [
+            ('MRC_HASH', '55:0', 'OEM_VALUE'),
+            ('FEC_212', '62:56', None),
+        ]),
+        (0x221c06a8, 'MRC_HASH', [
+            ('MRC_HASH', '7:0', 'OEM_VALUE'),
+            ('FEC_213', '62:56', None),
+        ]),
+        (0x221c06b0, 'OEM_PRODUCT_SEED', [
+            ('OEM_PRODUCT_SEED', '55:0', 'OEM_VALUE'),
+            ('FEC_214', '62:56', None),
+        ]),
+        (0x221c06b8, 'OEM_PRODUCT_SEED', [
+            ('OEM_PRODUCT_SEED', '55:0', 'OEM_VALUE'),
+            ('FEC_215', '62:56', None),
+        ]),
+        (0x221c06c0, 'OEM_PRODUCT_SEED', [
+            ('OEM_PRODUCT_SEED', '15:0', 'OEM_VALUE'),
+            ('FEC_216', '62:56', None),
+        ]),
+        (0x221c1340, 'OEM_SPARE_0', [
+            ('OEM_SPARE_0', '63:0', None),
+        ]),
+        (0x221c1348, 'OEM_SPARE_0', [
+            ('OEM_SPARE_0', '63:0', None),
+        ]),
+        (0x221c1350, 'OEM_SPARE_1', [
+            ('OEM_SPARE_1', '63:0', None),
+        ]),
+        (0x221c1358, 'OEM_SPARE_1', [
+            ('OEM_SPARE_1', '63:0', None),
+        ]),
+    ],
     '0xa01b': [  # kaanapali / SM8850
         (0x221c0090, 'OEM_SECURITY_POLICY', [
             ('DISALLOW_SOC_DEBUG', '0', '0'),
@@ -3596,6 +4183,26 @@ FUSE_TABLES = {
 
 
 
+# one per-soc view over the three built-in tables above, shaped exactly like what
+# load_security_profiles() returns: {soc: {debug vectors..., fuse_table, sw_ids,
+# name}}. the built-in and --security-profile paths then share a single lookup
+# instead of every consumer carrying its own fallback, and a profile xml can
+# override one key (say sw_ids) without hiding the built-ins for the others.
+def _builtin_soc_profiles():
+    out = {}
+    for soc, vectors in DEFAULT_DEBUG_OPTIONS.items():
+        out.setdefault(soc, {}).update(vectors)
+    for soc, rows in FUSE_TABLES.items():
+        out.setdefault(soc, {})['fuse_table'] = rows
+    for soc, ids in SW_ID_SOC.items():
+        out.setdefault(soc, {})['sw_ids'] = ids
+    for names in (SOC_NAMES, SOC_VERS_NAMES):
+        for soc, chipset in names.items():
+            out.setdefault(soc, {})['name'] = chipset
+    return out
+
+SOC_PROFILES = _builtin_soc_profiles()
+
 def is_sec_dat(data):
     if len(data) < 12:
         return False
@@ -3726,15 +4333,19 @@ def print_sec_dat(data, fuse_rows=None, src=None):
     print(c(YELLOW, f"  sec dat version {ver} not structured here."))
 
 def _hashseg_soc(seg):
-    # first soc hw version from a v7 hash table segment's qti/oem metadata
+    # first soc hw version from a v7/v8 hash table segment's qti/oem metadata
     try:
         _res, ver, cms, qms, oms = struct.unpack_from('<IIIII', seg, 0)
     except struct.error:
         return None
-    if ver != 7:
+    if ver == 6:
+        qm, om = mbn_v6_meta(seg)
+        return v6_meta_soc(om) or v6_meta_soc(qm)
+    hdr = {7: 40, 8: 56}.get(ver)
+    if hdr is None:
         return None
     fmt = '<' + 'IIII' + 'I' * NUM_SOC_HW_VERS + 'II' + 'Q' * NUM_SERIALS + 'IIIII' + '64s' + 'I'
-    for moff, msz in ((40 + cms, qms), (40 + cms + qms, oms)):
+    for moff, msz in ((hdr + cms, qms), (hdr + cms + qms, oms)):
         if msz >= 224 and len(seg) >= moff + 224:
             v = struct.unpack_from(fmt, seg, moff)
             soc = [x for x in v[4:4 + NUM_SOC_HW_VERS] if x]
@@ -3743,14 +4354,15 @@ def _hashseg_soc(seg):
     return None
 
 def _fuse_rows_for(soc, profiles):
-    # prefer a passed --security-profile, else the built-in table for this soc
-    if soc and profiles and profiles.get(soc, {}).get('fuse_table'):
-        return profiles[soc]['fuse_table'], 'security profile'
-    if soc and soc in FUSE_TABLES:
-        return FUSE_TABLES[soc], 'built-in table'
-    # no soc match (e.g. standalone sec.dat): use a passed profile's table if any
-    for d in (profiles or {}).values():
-        if d.get('fuse_table'):
+    # merged per-soc table: built-ins with any --security-profile xml layered on
+    prof = profiles or SOC_PROFILES
+    d = prof.get(soc) or {}
+    if d.get('fuse_table'):
+        from_xml = 'fuse_table' in d.get('xml_keys', ())
+        return d['fuse_table'], 'security profile' if from_xml else 'built-in table'
+    # no soc match (e.g. standalone sec.dat): only a passed profile may stand in
+    for d in prof.values():
+        if d.get('fuse_table') and 'fuse_table' in d.get('xml_keys', ()):
             return d['fuse_table'], 'security profile'
     return None, None
 
@@ -3763,10 +4375,33 @@ def print_summary(data, all_roots):
     if data[-0x200:].count(b'\xff') > 0x100:
         field("Tail content", "Flash erase padding (0xFF)")
 
+    if IMAGE_META:
+        section("Platform Binding (what the signature locks this image to)")
+        for i, m in enumerate(dict.fromkeys(IMAGE_META)):   # distinct, in order
+            auth, soc_hw, oem_id, oem_prod, jtag, serials, arb, soc_lc, oem_lc, bound = m
+            if len(set(IMAGE_META)) > 1:
+                print(f"\n  {BOLD}{auth} metadata{RESET}")
+            if soc_hw:
+                field("SoC Hardware Version" if len(soc_hw) == 1 else "SoC Hardware Versions",
+                      " and ".join(hexs(x) for x in soc_hw), soc_names(soc_hw))
+            field("OEM ID", hexs(oem_id))
+            field("OEM Product ID", hexs(oem_prod))
+            field("Anti-Rollback Version", hexs(arb))
+            field("OEM Lifecycle State", OEM_LIFECYCLE.get(oem_lc, hexs(oem_lc)))
+            if jtag:
+                field("JTAG ID", hexs(jtag))
+            if serials:
+                field("Serial Number" if len(serials) == 1 else "Serial Numbers",
+                      " and ".join(hexs(x) for x in serials))
+            field("Bound to", ", ".join(bound) if bound else "nothing (unbound)")
+
     section("OEM_PK_HASH (device / QFIL Loader PK hash = SHA of FULL root cert DER)")
-    roots = []
+    roots, seen = [], set()
     for r in all_roots:
-        if r['root'] and r['root'] not in roots:
+        # the same root recurs per authority and per image of a multi-elf
+        # container, so identity is the cert der itself, not the parsed dict
+        if r['root'] and r['root']['der'] not in seen:
+            seen.add(r['root']['der'])
             roots.append(r['root'])
     if not roots:
         print(c(RED, "  No root certificates found"))
@@ -3787,7 +4422,8 @@ def main():
     ap.add_argument('-v', '--verbose', action='count', default=0, help='-v x509 chain, -vv hex dumps')
     ap.add_argument('--security-profile', nargs='+', help='profile xml(s) to name tme debug options and fuses')
     args = ap.parse_args()
-    profiles = load_security_profiles(args.security_profile)
+    global PROFILES
+    profiles = PROFILES = load_security_profiles(args.security_profile)
 
     if not os.path.isfile(args.file):
         print(c(RED, f"Error: file not found: {args.file}")); sys.exit(1)
@@ -3809,9 +4445,35 @@ def main():
         print()
         return
 
-    elf, segments = parse_elf(data, args.verbose)
+    # programmer.elf / *.melf style containers hold several complete signed elfs
+    # end to end; parse each one instead of only the first (unsigned) stage
+    images = split_elf_images(data)
+    multi = len(images) > 1
+    if multi:
+        print_container_overview(data, images)
+
+    all_roots = []
+    for idx, (base, size) in enumerate(images):
+        if multi:
+            name = image_identity(data, base)[2]
+            what = f"{name}  -  " if name else ""
+            header(f"Image {idx + 1} of {len(images)}  -  {what}"
+                   f"offset {hexs(base)}, {size:,} bytes")
+        roots = inspect_image(data[base:base + size], args.verbose, profiles)
+        if roots is None:
+            if not multi:
+                sys.exit(1)
+            continue
+        all_roots += roots
+
+    print_summary(data, all_roots)
+    print()
+
+def inspect_image(data, verbose, profiles):
+    """parse one complete elf image: headers, extra segments, hash table segment."""
+    elf, segments = parse_elf(data, verbose)
     if elf is None:
-        sys.exit(1)
+        return None
 
     # a sec-elf fuse file names its fuses per soc; get the soc from the hash segment
     hp = elf['hash_phdr']
@@ -3832,7 +4494,6 @@ def main():
             print_sec_dat(sd, fuse_rows, fuse_src); break
 
     all_roots = []
-    hp = elf['hash_phdr']
     if not hp:
         section("Signing Info")
         print(c(YELLOW, "  No Hash Table Segment (unsigned image, or a non-MBN / TME container)."))
@@ -3851,9 +4512,8 @@ def main():
             print(c(RED, f"  hash table segment parse error: {e}"))
 
     if all_roots:
-        print_cert_chains(all_roots, args.verbose)
-    print_summary(data, all_roots)
-    print()
+        print_cert_chains(all_roots, verbose)
+    return all_roots
 
 if __name__ == '__main__':
     main()
