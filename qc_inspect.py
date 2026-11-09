@@ -3,11 +3,6 @@
 qc_inspect.py - Qualcomm firmware inspector (ELF / MBN / TME)  by Littlenine Ennea
 
     python qc_inspect.py <file> [-v|-vv]
-
-reads what sectools "secure-image --inspect" reads: elf header, program headers,
-mbn hash table segment (v3/v5/v6/v7/v8), common/qti/oem metadata, per-authority
-signatures, cert chains + root hash, and tme debug policy (apdp dpr/slc).
-structures reversed from sectools, not hardcoded magic-scan heuristics.
 """
 
 import sys
@@ -489,6 +484,318 @@ SW_ID_SOC = {
     '0xa023': {0x93: "UEFI-DTB", 0xc2: "BL31", 0xc6: "HYP-CONFIG", 0xc7: "PMIC-PSI",
                0xca: "QECP-DEBUG", 0xcb: "QECP-OEM-DCD", 0xcf: "DCB", 0xd0: "VP-FW",
                0xd8: "VP-FW-MINI"}}
+
+# every other chipset, taken verbatim out of the 86
+# config/<chipset>/<chipset>_secimage.xml files sectools ships (sm8350-era tree)
+# and frozen here, so naming a sw_id never needs sectools to be installed.
+SW_ID_SOC_CONFIGS = {
+    # 9205
+    '0x2013': {
+        0x00: 'sbl', 0x02: 'mcfg_hw / mcfg_sw / modem / modem_tiny',
+        0x03: 'prog_firehose_nand / vip', 0x05: 'devcfg', 0x07: 'tz', 0x09: 'appsboot', 0x0a: 'rpm',
+        0x0b: 'xbl_sec', 0x0c: 'haventkn / keymaster / sampleapp32 / securemm', 0x16: 'pmic',
+        0x1f: 'cmnlib', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x30: 'dam_mod',
+    },
+    # qcs405
+    '0x2014': {
+        0x00: 'xbl / xbl_nand',
+        0x03: 'prog_firehose_ddr / prog_firehose_nand / prog_firehouse_lite / vip', 0x04: 'adsp',
+        0x05: 'devcfg', 0x07: 'tz', 0x0a: 'rpm', 0x0b: 'xbl_sec',
+        0x0c: '10 ids incl dhsecapp, haventkn, keymaster', 0x0d: 'wcnss',
+        0x10: 'dolby / dolby_no_sec', 0x16: 'pmic', 0x17: 'cdsp', 0x1c: 'abl',
+        0x1f: 'cmnlib / cmnlib64 / cmnlib64_dbl / cmnlib_dbl', 0x22: 'multi_image',
+        0x23: 'multi_image_qti',
+    },
+    # ipq6018
+    '0x2017': {
+        0x00: 'xbl / xbl_nand', 0x04: 'lpass_q6', 0x05: 'devcfg', 0x07: 'tz', 0x09: 'appsbl',
+        0x0a: 'rpm', 0x0c: 'sampleapp32 / sampleapp64', 0x0d: 'wcss_q6', 0x15: 'qhee', 0x17: 'hlos',
+        0x1f: 'cmnlib / cmnlib64', 0x22: 'multi_image', 0x23: 'multi_image_qti',
+    },
+    # qcn90xx
+    '0x400d': {
+        0x00: 'wlan', 0x01: 'bdf',
+    },
+    # moselle
+    '0x4014': {
+        0x38: 'bt_patch',
+    },
+    # sdx24
+    '0x6002': {
+        0x00: 'sbl1 / sbl1_hash_128b_align / sbl1_hash_64b_align / sbl1_nand / sbl1_nand_hash_128b_align',
+        0x02: 'mcfg_hw / mcfg_sw / modem', 0x03: 'prog_firehose', 0x05: 'devcfg', 0x07: 'tz',
+        0x09: 'uefi', 0x0b: 'xbl_sec',
+        0x0c: 'haventkn / keymaster / sampleapp32 / sampleapp64 / smpcpyap', 0x15: 'hyp',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1f: 'cmnlib / cmnlib64', 0x21: 'aop',
+        0x22: 'multi_image', 0x23: 'multi_image_qti', 0x25: 'xbl_config',
+    },
+    # sm8150
+    '0x6003': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x06: 'sp_mcp_qti / sp_mcp_v1 / sp_mcp_v2 / spss1t / spss2t', 0x07: 'tz',
+        0x08: 'sp_apps_qti', 0x0b: 'xbl_sec', 0x0c: '27 ids incl cppf, dhsecapp, fingerpr',
+        0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi', 0x14: 'gfx_microcode', 0x15: 'hyp',
+        0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee',
+        0x1f: 'cmnlib / cmnlib64', 0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image',
+        0x23: 'multi_image_qti', 0x24: 'qupv3', 0x25: 'xbl_config', 0x27: 'imagefv / uefifv',
+        0x28: 'npu', 0x2a: 'face_auth / ipprotector', 0x2d: 'ipa_uc',
+    },
+    # sdm670
+    '0x6005': {
+        0x00: 'xbl', 0x01: 'mba', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehose_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '18 ids incl cppf, dhsecapp, haventkn', 0x0e: 'venus',
+        0x11: 'sti', 0x12: 'wlan', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x24: 'qupv3', 0x25: 'xbl_config', 0x27: 'uefifv',
+    },
+    # sc8180x
+    '0x6006': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x06: 'sp_mcp / sp_mcp_qti', 0x07: 'tz', 0x08: 'sp_apps_qti', 0x0b: 'xbl_sec',
+        0x0c: '18 ids incl dhsecapp, haventkn, hdcp1', 0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan',
+        0x13: 'acpi', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x16: 'pmic', 0x17: 'cdsp', 0x18: 'slpi',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv', 0x28: 'npu',
+    },
+    # sm6150
+    '0x6007': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '16 ids incl cppf, hdcp1, hdcp2p2', 0x0e: 'venus',
+        0x11: 'sti', 0x12: 'wlan', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv',
+    },
+    # sdm670
+    '0x6009': {
+        0x00: 'xbl', 0x01: 'mba', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehose_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '18 ids incl cppf, dhsecapp, haventkn', 0x0e: 'venus',
+        0x11: 'sti', 0x12: 'wlan', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x24: 'qupv3', 0x25: 'xbl_config', 0x27: 'uefifv',
+    },
+    # sdx55
+    '0x600b': {
+        0x00: 'sbl1 / sbl1_nand', 0x02: 'mcfg_hw / mcfg_sw / modem / qdsp6sw',
+        0x03: 'prog_firehose', 0x05: 'devcfg', 0x07: 'tz', 0x09: 'uefi', 0x0b: 'xbl_sec',
+        0x0c: 'haventkn / keymaster / sampleapp32 / sampleapp64 / smpcpyap', 0x0e: 'apps',
+        0x15: 'hyp', 0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1f: 'cmnlib / cmnlib64',
+        0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x2b: 'secelf',
+        0x200: 'dbgp / dbgp_dbl',
+    },
+    # sm7150
+    '0x600c': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '23 ids incl cppf, fingerpr, gptest', 0x0e: 'venus',
+        0x11: 'sti', 0x12: 'wlan', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv', 0x28: 'npu',
+    },
+    # fraser
+    '0x600d': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '28 ids incl connsec, cppf, dhsecapp', 0x0d: 'wcnss',
+        0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi', 0x14: 'gfx_microcode', 0x15: 'hyp',
+        0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee',
+        0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv', 0x28: 'npu', 0x2a: 'face_auth',
+        0x2d: 'ipa_uc', 0x2f: 'mlvm',
+    },
+    # rennell
+    '0x600e': {
+        0x00: 'xbl', 0x01: 'mba', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0a: 'rpm', 0x0b: 'xbl_sec', 0x0c: '27 ids incl cppf, dhsecapp, featenabler',
+        0x0d: 'wcnss', 0x0e: 'apps / venus', 0x10: 'dolby', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi',
+        0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar',
+        0x1c: 'abl', 0x1d: 'ipa_fw', 0x1f: 'cmnlib / cmnlib64', 0x21: 'aop', 0x22: 'multi_image',
+        0x23: 'multi_image_qti', 0x24: 'qupv3', 0x25: 'xbl_config', 0x27: 'imagefv / uefifv',
+        0x28: 'npu', 0x2a: 'face_auth', 0x2d: 'ipa_uc', 0x2f: 'mlvm',
+    },
+    # bitra
+    '0x6012': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '26 ids incl cppf, dhsecapp, featenabler', 0x0d: 'wcnss',
+        0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi', 0x14: 'gfx_microcode', 0x15: 'hyp',
+        0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee',
+        0x1f: 'cmnlib / cmnlib64', 0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image',
+        0x23: 'multi_image_qti', 0x24: 'qupv3', 0x25: 'xbl_config', 0x27: 'imagefv / uefifv',
+        0x28: 'npu', 0x2a: 'face_auth', 0x2b: 'secelf', 0x2d: 'ipa_uc', 0x2f: 'mlvm',
+        0x200: 'dbgp / dbgp_dbl',
+    },
+    # chitwan
+    '0x6013': {
+        0x00: 'sbl1 / sbl1_nand', 0x02: 'mcfg_hw / mcfg_sw / modem', 0x03: 'prog_firehose / vip',
+        0x05: 'devcfg', 0x07: 'tz', 0x09: 'uefi', 0x0b: 'xbl_sec',
+        0x0c: 'sampleapp32 / sampleapp64 / smpcpyap', 0x0e: 'apps', 0x15: 'hyp', 0x1b: 'efs_tar',
+        0x1c: 'abl', 0x1d: 'ipa_fw', 0x1f: 'cmnlib / cmnlib64', 0x21: 'aop', 0x22: 'multi_image',
+        0x23: 'multi_image_qti', 0x25: 'xbl_config', 0x2b: 'secelf', 0x200: 'dbgp / dbgp_dbl',
+    },
+    # makena
+    '0x6014': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x06: 'sp_mcp_qti / sp_mcp_v1 / sp_mcp_v2 / spss1t', 0x07: 'tz',
+        0x08: 'sp_apps / sp_apps_qti', 0x0b: 'xbl_sec',
+        0x0c: '26 ids incl cppf, dhsecapp, featenabler', 0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan',
+        0x13: 'acpi', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp', 0x18: 'slpi',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x24: 'qupv3', 0x25: 'xbl_config',
+        0x27: 'imagefv / uefifv', 0x28: 'npu', 0x2a: 'ipprotector', 0x2d: 'ipa_uc', 0x2e: 'cvp',
+        0x2f: 'mlvm', 0x31: 'cpucp', 0x32: 'guestos', 0x39: 'smss', 0x43: 'usbfw', 0x44: 'cdsp1',
+        0x45: 'adsp_lite', 0x200: 'dbgp / dbgp_dbl',
+    },
+    # olympic
+    '0x6016': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem', 0x03: 'prog_firehose', 0x05: 'devcfg',
+        0x07: 'tz', 0x09: 'uefi', 0x0b: 'xbl_sec', 0x0c: 'sampleapp32 / sampleapp64 / smpcpyap',
+        0x0e: 'apps', 0x15: 'hyp', 0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw',
+        0x1f: 'cmnlib / cmnlib64', 0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti',
+        0x25: 'xbl_config', 0x2b: 'secelf', 0x3a: 'tools_fv', 0x3b: 'quantum_fv', 0x3c: 'quest_fv',
+        0x200: 'dbgp / dbgp_dbl',
+    },
+    # cedros
+    '0x6017': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '25 ids incl cppf, dhsecapp, featenabler', 0x0d: 'wcnss',
+        0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi', 0x14: 'gfx_microcode', 0x15: 'hyp',
+        0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee',
+        0x1f: 'cmnlib / cmnlib64', 0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv', 0x28: 'npu', 0x2a: 'face_auth / ipprotector',
+        0x2b: 'secelf', 0x2d: 'ipa_uc', 0x2e: 'cvp', 0x2f: 'mlvm', 0x31: 'cpucp',
+        0x200: 'dbgp / dbgp_dbl',
+    },
+    # kodiak
+    '0x6018': {
+        0x00: 'xbl', 0x01: 'mba', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0b: 'xbl_sec', 0x0c: '24 ids incl cppf, dhsecapp, featenabler', 0x0d: 'wcnss',
+        0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi', 0x14: 'gfx_microcode', 0x15: 'hyp',
+        0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee',
+        0x1f: 'cmnlib / cmnlib64', 0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv', 0x28: 'npu', 0x2a: 'face_auth',
+        0x2b: 'secelf', 0x2d: 'ipa_uc', 0x2f: 'mlvm', 0x31: 'cpucp', 0x200: 'dbgp / dbgp_dbl',
+    },
+    # qtang2
+    '0x7001': {
+        0x01: 'mba', 0x02: 'mcfg_hw / mcfg_sw / modem', 0x0a: 'rpm', 0x12: 'wlan', 0x1b: 'efs_tar',
+    },
+    # nicobar
+    '0x9001': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0a: 'rpm', 0x0b: 'xbl_sec', 0x0c: '18 ids incl cppf, haventkn, hdcp1',
+        0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv',
+    },
+    # kamorta
+    '0x9002': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0a: 'rpm', 0x0b: 'xbl_sec', 0x0c: '18 ids incl cppf, haventkn, hdcp1',
+        0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp',
+        0x1b: 'efs_tar', 0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64',
+        0x20: 'shrm', 0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv',
+    },
+    # agatti
+    '0x9003': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0a: 'rpm', 0x0b: 'xbl_sec', 0x0c: '25 ids incl cppf, dhsecapp, featenabler',
+        0x0d: 'wcnss', 0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi',
+        0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar',
+        0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64', 0x20: 'shrm',
+        0x21: 'aop', 0x22: 'multi_image', 0x23: 'multi_image_qti', 0x24: 'qupv3',
+        0x25: 'xbl_config', 0x27: 'imagefv / uefifv', 0x28: 'npu', 0x2a: 'face_auth',
+        0x2b: 'secelf', 0x2d: 'ipa_uc', 0x2f: 'mlvm', 0x200: 'dbgp / dbgp_dbl',
+    },
+    # mannar
+    '0x9004': {
+        0x00: 'xbl', 0x02: 'mcfg_hw / mcfg_sw / modem',
+        0x03: 'prog_firehose_ddr / prog_firehouse_lite / vip', 0x04: 'adsp', 0x05: 'devcfg',
+        0x07: 'tz', 0x0a: 'rpm', 0x0b: 'xbl_sec', 0x0c: '25 ids incl cppf, dhsecapp, featenabler',
+        0x0d: 'wcnss', 0x0e: 'venus', 0x11: 'sti', 0x12: 'wlan', 0x13: 'acpi',
+        0x14: 'gfx_microcode', 0x15: 'hyp', 0x17: 'cdsp', 0x18: 'slpi', 0x1b: 'efs_tar',
+        0x1c: 'abl', 0x1d: 'ipa_fw', 0x1e: 'tz_tee', 0x1f: 'cmnlib / cmnlib64', 0x20: 'shrm',
+        0x21: 'aop', 0x22: 'multi_image', 0x24: 'qupv3', 0x25: 'xbl_config',
+        0x27: 'imagefv / uefifv', 0x28: 'npu', 0x2a: 'face_auth', 0x2b: 'secelf', 0x2d: 'ipa_uc',
+        0x2f: 'mlvm', 0x31: 'cpucp', 0x200: 'dbgp / dbgp_dbl',
+    },
+}
+
+SW_ID_SOC.update(SW_ID_SOC_CONFIGS)
+
+# jtag id (msm_part) -> chipset. the low 28 bits of the JTAG ID a device reports;
+# the top nibble is the die revision and is masked off before lookup. same source,
+# including the sibling dies sectools only names in a comment beside <msm_part>
+# (e.g. "0x001420E1 - Lahaina Premier").
+MSM_PART_NAMES = {
+    0x0160e1: '4020', 0x03a0e1: '9x50', 0x03b0e1: '9x55', 0x0460e1: '8953 / MSM8953',
+    0x04a0e1: '9607', 0x04f0e1: '8937', 0x0500e1: 'APQ8037', 0x0510e1: '8909W', 0x0560e1: '8917',
+    0x05e0e1: '8998 / Msm8998', 0x0620e1: 'APQ8098', 0x0660e1: '8053lat / APQ8053',
+    0x06b0e1: '8940', 0x06f0e1: '8996au', 0x07b0e1: 'sdx50m', 0x07d0e1: '9x60', 0x07f0e1: '9x65',
+    0x0860e1: '8920', 0x08a0e1: '807x', 0x08b0e1: 'sdm845', 0x08c0e1: 'sdm660',
+    0x0910e1: 'SDM670 / sdm670', 0x0930e1: 'SDA670', 0x0940e1: '8905 / MSM8905',
+    0x0950e1: 'SM6150 / sm6150', 0x0960e1: 'SDX24 / sdx24', 0x0970e1: 'SDX24M', 0x09a0e1: 'sdm450',
+    0x0a50e1: 'sm8150', 0x0a60e1: 'sm8150p', 0x0aa0e1: 'QCS605', 0x0ab0e1: '6290',
+    0x0ac0e1: 'sdm630', 0x0af0e1: 'qcs405', 0x0b80e1: 'sc8180x', 0x0ba0e1: 'sdm632',
+    0x0bf0e1: 'sdm439', 0x0c30e1: 'SM8250 / sm8250', 0x0ce0e1: 'SM8250', 0x0cf0e1: 'SDX55',
+    0x0d30e1: '7605', 0x0d90e1: '6390', 0x0db0e1: 'SDM710', 0x0e30e1: 'qcs401', 0x0e40e1: 'qcs403',
+    0x0e50e1: 'SDX55 / sdx55', 0x0e60e1: 'SM7150 / sm7150', 0x0e70e1: 'SM7150p', 0x0e80e1: 'sa8155',
+    0x0e90e1: 'sa8155p', 0x0ea0e1: 'SXR1130', 0x0eb0e1: 'qcs407', 0x0ec0e1: 'SM6150p',
+    0x0ed0e1: 'SXR1120', 0x0f50e1: 'SA6155', 0x1040e1: 'qcs404', 0x1060e1: 'qm215',
+    0x1070e1: '9205', 0x10a0e1: 'nicobar', 0x10b0e1: 'QCN9000 / qcn90xx', 0x10c0e1: 'QCN9001',
+    0x10d0e1: 'QCN9003', 0x10e0e1: 'QCN9010', 0x10f0e1: 'QCN9011', 0x1110e1: 'QCN9012',
+    0x1140e1: 'QCN9013', 0x1150e1: 'QCN9002', 0x11d0e1: 'SDX24_AUTO', 0x11e0e1: 'saipan',
+    0x1250e1: 'SA515M', 0x1260e1: 'ipq6018', 0x1280e1: 'FSM10055 / fsm100xx',
+    0x1290e1: 'SM6150 IoT Low', 0x12a0e1: 'rennell', 0x12b0e1: 'rennell Premier',
+    0x12c0e1: 'sc7180', 0x1350e1: 'Lahaina / lahaina', 0x1360e1: 'kamorta', 0x1370e1: 'kamorta P',
+    0x13f0e1: 'bitra / bitra SDM or Mobile', 0x1410e1: 'bitra SDA or w/ Modem disabled',
+    0x1420e1: 'Lahaina Premier', 0x1440e1: 'chitwan',
+    0x1450e1: 'agatti / agatti SDM or Mobile with modem', 0x1470e1: 'moselle',
+    0x1490e1: 'rennell v1.1', 0x14a0e1: 'makena / SC8280X', 0x14b0e1: 'SA8295P',
+    0x14c0e1: 'SA8540P', 0x14f0e1: 'agatti SDM or Mobile without modem', 0x1530e1: 'ipq5018',
+    0x1590e1: 'cedros', 0x1610e1: 'olympic', 0x1650e1: 'FSM10000', 0x1680e1: 'FSM10005',
+    0x1690e1: 'FSM10010', 0x16a0e1: 'FSM10051', 0x16b0e1: 'FSM10056', 0x16e0e1: 'mannar Premier',
+    0x16f0e1: 'mannar', 0x1730e1: 'kamorta IOT with modem', 0x1740e1: 'kamorta IOT APQ only',
+    0x1750e1: 'nicobar IOT with modem', 0x1760e1: 'nicobar IOT APQ only',
+    0x1850e1: 'aggati IOT with modem', 0x1860e1: 'aggati IOT APQ only', 0x18a0e1: 'fraser',
+    0x18b0e1: 'qtang2', 0x1920e1: 'SM7325 / kodiak', 0x1930e1: 'SC7280', 0x1940e1: 'SC7295',
+    0x7050e1: '8916', 0x7060e1: '8016 / APQ8016', 0x8090e1: '9916', 0x80b0e1: '9955',
+    0x8100e1: '806x', 0x9000e1: '8084', 0x90b0e1: '8939', 0x90c0e1: 'APQ8036',
+    0x90d0e1: '8039 / APQ8039', 0x91b0e1: '8929', 0x9210e1: '9x35', 0x9400e1: '8994',
+    0x9440e1: '2432', 0x9470e1: '8996', 0x94b0e1: '9055', 0x9500e1: '9x40', 0x9540e1: '9x45',
+    0x9600e1: '8064 / 8909', 0x9630e1: '8092', 0x9680e1: '8009lat / APQ8009', 0x9690e1: '8992',
+    0x9720e1: '8952', 0x9730e1: '9206 / 9206tx', 0x9790e1: '401x', 0x9900e1: '8976',
+    0x9d00e1: '8076',
+}
+
+def msm_part_name(jtag):
+    """chipset for a raw JTAG ID / msm_part, die revision masked off"""
+    return MSM_PART_NAMES.get(jtag & 0x0FFFFFFF)
+
+def hw_id_extra(hw_id):
+    """what to show beside a Hardware ID: the chipset its signature binds to.
+    an image signed with in_use_soc_hw_version carries 0 here and gets nothing."""
+    if not hw_id:
+        return ""
+    nm = msm_part_name(hw_id)
+    rev = hw_id >> 28
+    return f"{nm}, die rev {rev}" if nm else f"jtag id not in any shipped config, die rev {rev}"
 
 # ids seen in signed images but not in any profile here, matched by finding a
 # standalone file of a known name with the same id; printed with a trailing "?"
@@ -1176,7 +1483,7 @@ def print_v6_metadata(md, title):
     section(title)
     field("Major Version", maj); field("Minor Version", minr)
     field("Software ID", hexs(sw_id), sw_id_name(sw_id, soc, 6) or "")
-    field("Hardware ID", hexs(hw_id))
+    field("Hardware ID", hexs(hw_id), hw_id_extra(hw_id))
     field("OEM ID", hexs(oem_id)); field("Model ID", hexs(model_id))
     field("App ID", hexs(app_id))
     if socs:
@@ -1254,7 +1561,15 @@ def print_authority_signing(authority, sig, cert_region, show_ou=False):
         if show_ou and attest['info']['ou']:
             section(f"{authority} Attestation Certificate OU Fields")
             for name, val in attest['info']['ou']:
-                field(name, "0x" + val)
+                # a legacy HW_ID OU is 64 bit: upper half is the jtag id / msm_part
+                extra = ""
+                if name == 'HW_ID' and val:
+                    try:
+                        n = int(val, 16)
+                        extra = hw_id_extra(n >> 32 if len(val) > 8 else n)
+                    except ValueError:
+                        extra = ""
+                field(name, "0x" + val, extra)
     for ca in cas:
         section(f"{authority} CA Certificate Properties")
         cert_role_properties(ca)
@@ -4416,6 +4731,178 @@ def print_summary(data, all_roots):
         if pk384:
             print(f"  {DIM}SPKI SHA384 (pubkey only, NOT the fuse): {pk384}{RESET}")
 
+# --- debug policy (apdp / dp.mbn) payload -------------------------------------
+# the DBGP struct that sits in the load segment of a signed debug policy elf.
+# field map from 80-NM248-6 Rev K section 3.1.1 plus the on-target structs
+# (sec_dbg_t in scm_sip_interface.h / SecDbg.h, dbg_policy_t for revision 1).
+# the layout is chosen by matching the struct's own size field, so a wrong guess
+# is reported instead of printed as garbage.
+DP_MAGIC = b'DBGP'
+
+DP_FLAGS = {
+    # revision 1 numbering comes from dbg_policy_t, which carries two ids the
+    # user guide's revision 1 table leaves out (bits 2 and 3)
+    1: {0: 'ENABLE_ONLINE_CRASH_DUMPS', 1: 'ENABLE_OFFLINE_CRASH_DUMPS',
+        2: 'DISABLE_AUTHENTICATION', 3: 'ENABLE_JTAG', 4: 'ENABLE_LOGGING'},
+    2: {0: 'ENABLE_ONLINE_CRASH_DUMPS', 1: 'ENABLE_OFFLINE_CRASH_DUMPS',
+        2: 'ENABLE_JTAG', 3: 'ENABLE_LOGS'},
+    3: {0: 'ENABLE_ONLINE_CRASH_DUMPS', 1: 'ENABLE_OFFLINE_CRASH_DUMPS',
+        2: 'ENABLE_JTAG', 3: 'ENABLE_LOGS', 24: 'ENABLE_NONSECURE_CRASH_DUMPS',
+        25: 'APPS_ENCRYPTED_MINI_DUMPS', 26: 'MPSS_ENCRYPTED_MINI_DUMPS',
+        27: 'LPASS_ENCRYPTED_MINI_DUMPS', 28: 'CSS_ENCRYPTED_MINI_DUMPS',
+        29: 'ADSP_ENCRYPTED_MINI_DUMPS', 30: 'CDSP_ENCRYPTED_MINI_DUMPS',
+        31: 'WLAN_ENCRYPTED_MINI_DUMPS'},
+    4: {0: 'ENABLE_ONLINE_CRASH_DUMPS', 1: 'ENABLE_OFFLINE_CRASH_DUMPS',
+        2: 'ENABLE_JTAG', 3: 'ENABLE_LOGS', 24: 'ENABLE_NONSECURE_CRASH_DUMPS'},
+    5: {0: 'ENABLE_ONLINE_CRASH_DUMPS', 1: 'ENABLE_OFFLINE_CRASH_DUMPS',
+        2: 'ENABLE_JTAG', 3: 'ENABLE_LOGS', 4: 'ENABLE_MODEM_INV_DEBUG',
+        5: 'ENABLE_MODEM_NINV_DEBUG', 6: 'ENABLE_DEBUG_INV',
+        24: 'ENABLE_NONSECURE_CRASH_DUMPS', 25: 'APPS_ENCRYPTED_MINI_DUMPS',
+        26: 'MPSS_ENCRYPTED_MINI_DUMPS', 27: 'LPASS_ENCRYPTED_MINI_DUMPS',
+        28: 'CSS_ENCRYPTED_MINI_DUMPS', 29: 'ADSP_ENCRYPTED_MINI_DUMPS',
+        30: 'CDSP_ENCRYPTED_MINI_DUMPS', 31: 'WLAN_ENCRYPTED_MINI_DUMPS'}}
+
+# bit pairs that encode a value rather than a flag, per revision
+DP_FIELDS = {5: [(7, 8, 'ENABLE_DEBUG_LEVEL',
+                  {0: 'off', 1: 'NonSecure', 2: 'CP + NonSecure',
+                   3: 'CP + QSEE + NonSecure'})]}
+
+# first bit of the oem-reserved range, per revision
+DP_OEM_BIT = {1: 48, 2: 48, 3: 48, 4: 48, 5: 40}
+
+# images the image_id_bitmap selects, bit position -> name
+DP_IMAGE_BITS = {0: 'XBL', 1: 'MBA', 2: 'AMSS_HASH_TABLE'}
+
+def _dp_sizes(hash_sz, n_roots, qti, n_serial=200):
+    """byte size of a revision >= 2 DBGP struct with the given shape"""
+    return (4 + 4 + 4 + 8 + 4 + 4 + n_roots * hash_sz + 4 + n_serial * 4
+            + (4 + n_roots * hash_sz if qti else 0))
+
+def _dp_legacy_size(hash_sz=32, n_roots=8, n_images=32):
+    """revision 1 dbg_policy_t: serial range instead of a serial list"""
+    return 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + n_images * 4 + 4 + n_roots * hash_sz
+
+def is_debug_policy(data):
+    if len(data) < 12 or data[:4] != DP_MAGIC:
+        return False
+    size, rev = struct.unpack_from('<II', data, 4)
+    return 0 < size <= len(data) + 64 and 0 < rev <= 16
+
+def _dp_shape(size, rev):
+    """pick the struct shape whose total length matches the size field.
+    returns ('modern', hash_sz, n_roots, has_qti) / ('legacy', 32, 8, False) / None"""
+    cands = []
+    for hsz in (48, 32):
+        for nr in (4, 8):
+            for qti in (True, False):
+                cands.append((_dp_sizes(hsz, nr, qti), ('modern', hsz, nr, qti)))
+    cands.append((_dp_legacy_size(), ('legacy', 32, 8, False)))
+    exact = [shape for total, shape in cands if total == size]
+    if exact:
+        # prefer the shape this revision is documented to use
+        want_q = rev >= 3
+        want_h = 48 if rev >= 5 else 32
+        exact.sort(key=lambda s: (s[0] != ('legacy' if rev <= 1 else 'modern'),
+                                  s[1] != want_h, s[3] != want_q))
+        return exact[0]
+    return None
+
+def print_debug_policy(data):
+    section("Debug Policy (DBGP)")
+    size, rev = struct.unpack_from('<II', data, 4)
+    field("Magic", data[:4].decode('ascii', 'replace'))
+    field("Size", f"{size} bytes")
+    field("Revision", rev)
+    shape = _dp_shape(size, rev)
+    if shape is None:
+        print(c(YELLOW, f"  no known DBGP layout is {size} bytes long; "
+                        f"fields below are not decoded."))
+        return
+    kind, hash_sz, n_roots, has_qti = shape
+    field("Layout matched", f"{kind}, {n_roots} root slots, "
+                            f"{'SHA384' if hash_sz == 48 else 'SHA256'} hashes"
+                            f"{', with QTI root list' if has_qti else ''}")
+
+    if kind == 'legacy':
+        (s_start, s_end, _rsv, flags2, flags, img_cnt) = struct.unpack_from('<IIIIII', data, 12)
+        o = 36
+        images = list(struct.unpack_from('<32I', data, o)); o += 128
+        rch_cnt, = struct.unpack_from('<I', data, o); o += 4
+        serials = None
+        field("Serial Number Range", f"{hexs(s_start)} .. {hexs(s_end)}")
+        if flags2:
+            field("Flags2", hexs(flags2))
+        flags = flags & 0xFFFFFFFF
+        img_bitmap = None
+    else:
+        flags, = struct.unpack_from('<Q', data, 12)
+        img_bitmap, rch_cnt = struct.unpack_from('<II', data, 20)
+        o = 28
+        images = None
+
+    # --- flags ---------------------------------------------------------------
+    names = DP_FLAGS.get(rev, DP_FLAGS[5])
+    oem_bit = DP_OEM_BIT.get(rev, 48)
+    pairs = {b for lo, hi, _n, _m in DP_FIELDS.get(rev, []) for b in (lo, hi)}
+    field("Flags", hexs(flags))
+    on = [(b, names.get(b)) for b in range(64)
+          if (flags >> b) & 1 and b not in pairs]
+    for b, nm in on:
+        if b >= oem_bit:
+            print(f"    bit{b:<2}  {c(CYAN, 'OEM reserved')}")
+        elif nm:
+            print(f"    bit{b:<2}  {c(GREEN, 'DP_' + nm)}")
+        else:
+            print(f"    bit{b:<2}  {c(YELLOW, 'set, not named for revision %d' % rev)}")
+    for lo, hi, nm, meaning in DP_FIELDS.get(rev, []):
+        v = ((flags >> lo) & 1) | (((flags >> hi) & 1) << 1)
+        print(f"    bit{lo},{hi} {c(GREEN, 'DP_' + nm)} = {v} "
+              f"({meaning.get(v, '?')})")
+    if not on and not DP_FIELDS.get(rev):
+        print(c(DIM, "    (no flags set)"))
+
+    # --- image ids -----------------------------------------------------------
+    if img_bitmap is not None:
+        sel = [DP_IMAGE_BITS.get(b, f"bit{b}") for b in range(32) if (img_bitmap >> b) & 1]
+        field("Image Bit Map", hexs(img_bitmap),
+              ", ".join(sel) if sel else
+              "empty - policy cert hash is root of trust for ALL images")
+    elif images is not None:
+        used = [hexs(i) for i in images[:img_cnt]] if img_cnt <= 32 else []
+        field("Image ID Count", img_cnt)
+        if used:
+            field("Image IDs", ", ".join(used))
+
+    # --- root cert hashes ----------------------------------------------------
+    def _hashes(off, cnt, label):
+        field(label + " Count", cnt)
+        shown = 0
+        for i in range(min(cnt, n_roots)):
+            h = data[off + i * hash_sz: off + (i + 1) * hash_sz]
+            if len(h) != hash_sz:
+                break
+            z = all(x == 0 for x in h)
+            print(f"    [{i}] {'0x' + h.hex()}"
+                  + (c(DIM, "   (empty slot)") if z else
+                     c(GREEN, "   <- replaces OEM_PK_HASH as root of trust")))
+            shown += 1
+        return off + n_roots * hash_sz
+
+    o = _hashes(o, rch_cnt, "OEM Root Cert Hash")
+
+    if kind == 'modern':
+        ser_cnt, = struct.unpack_from('<I', data, o); o += 4
+        field("Serial Number Count", ser_cnt)
+        if ser_cnt:
+            ser = struct.unpack_from('<%dI' % min(ser_cnt, 200), data, o)
+            for i, s in enumerate(ser):
+                print(f"    [{i}] {hexs(s)}  ({s})")
+        o += 200 * 4
+        if has_qti:
+            qcnt, = struct.unpack_from('<I', data, o); o += 4
+            _hashes(o, qcnt, "QTI Root Cert Hash")
+
+
 def main():
     ap = argparse.ArgumentParser(description='Qualcomm MBN/ELF firmware image inspector')
     ap.add_argument('file', help='input .elf / .mbn / .melf')
@@ -4486,6 +4973,8 @@ def inspect_image(data, verbose, profiles):
         if s['os_type'] in (OS_SEG_HASH, OS_SEG_PHDR) or not s['filesz']:
             continue
         sd = data[s['offset']:s['offset'] + s['filesz']]
+        if is_debug_policy(sd):
+            print_debug_policy(sd); break
         if is_tme_segment(sd):
             print_tme_segment(sd, profiles); break
         if is_multi_image_segment(sd):
